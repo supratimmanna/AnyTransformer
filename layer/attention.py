@@ -1,6 +1,34 @@
 import torch
 import torch.nn as nn
 
+
+class Scaled_DotProduct_Attention(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, Q, K, V, head_dim, mask_bool, dropout):    
+
+        #  Dot product for each head
+        attention_score = (Q @ K.transpose(2,3)) / torch.sqrt(torch.tensor(head_dim))
+
+        # Use the mask to fill attention scores
+        attention_score.masked_fill_(mask_bool, -torch.inf)
+
+        attention_weight = torch.softmax(attention_score, dim=1)
+        attention_weight = dropout(attention_weight)
+
+        # Shape: (b, token_num, num_heads, head_dim)
+        context_vector = (attention_weight @ V).transpose(1,2)
+
+        return context_vector
+
+
+
+
+
+
+
+
 class MultiHead_Attention(nn.Module):
     def __init__(self, in_dim, out_dim, context_length, num_head, dropout=0.0, qkv_bias = False, causal_attention=True):
         super().__init__()
@@ -37,36 +65,21 @@ class MultiHead_Attention(nn.Module):
         K = self.w_k(x)
         V = self.w_v(x) 
 
-        # Unroll last dim: (b, num_tokens, d_out) -> (b, num_tokens, num_heads, head_dim)
-        Q = Q.view(b, token_num, self.num_head, self.head_dim)
-        K = K.view(b, token_num, self.num_head, self.head_dim)
-        V = V.view(b, token_num, self.num_head, self.head_dim)
-
-        # Transpose: (b, num_tokens, num_heads, head_dim) -> (b, num_head, token_num, head_dim)
-        Q = Q.transpose(1,2)
-        K = K.transpose(1,2)
-        V = V.transpose(1,2)
-
-        #  Dot product for each head
-        attention_score = (Q @ K.transpose(2,3)) / torch.sqrt(self.head_dim)
+        # Unroll last dim: (b, token_num, d_out) -> (b, token_num, num_head, head_dim) -> (b, num_head, token_num, head_dim)
+        Q = Q.view(b, token_num, self.num_head, self.head_dim).transpose(1,2)
+        K = K.view(b, token_num, self.num_head, self.head_dim).transpose(1,2)
+        V = V.view(b, token_num, self.num_head, self.head_dim).transpose(1,2)
 
         # Use the mask to fill attention scores
         if self.causal_attention:
-            mask_bool = self.causal_attention_mask.bool[:token_num, :token_num]
+            mask_bool = self.causal_attention_mask.bool()[:token_num, :token_num]
 
         if attention_mask is not None:
             mask_bool = attention_mask[:token_num, :token_num]
 
-        attention_score.masked_fill_(mask_bool, -torch.inf)
-
-        attention_weight = torch.softmax(attention_score, dim=1)
-        attention_weight = self.dropout(attention_weight)
-
-        # Shape: (b, token_num, num_heads, head_dim)
-        context_vector = (attention_weight @ V).transpose(1,2)
-
+        context_vector = Scaled_DotProduct_Attention()(Q, K, V, self.head_dim, mask_bool, self.dropout)
         # Combine heads, where self.out_dim = self.num_head * self.head_dim
-        context_vec = context_vec.contiguous().view(b, token_num, self.out_dim)
+        context_vector = context_vector.contiguous().view(b, token_num, self.out_dim)
 
         context_vector = self.out_proj(context_vector)
 
@@ -130,11 +143,11 @@ class MultiHead_Group_Query_Attention(nn.Module):
 
 
         #  Dot product for each head
-        attention_score = (Q @ K.transpose(2,3)) / torch.sqrt(self.head_dim)
+        attention_score = (Q @ K.transpose(2,3)) / torch.sqrt(torch.tensor(self.head_dim))
 
         # Use the mask to fill attention scores
         if self.causal_attention:
-            mask_bool = self.causal_attention_mask.bool[:token_num, :token_num]
+            mask_bool = self.causal_attention_mask.bool()[:token_num, :token_num]
 
         if attention_mask is not None:
             mask_bool = attention_mask[:token_num, :token_num]
@@ -146,9 +159,9 @@ class MultiHead_Group_Query_Attention(nn.Module):
 
         # Shape: (b, token_num, num_heads, head_dim)
         context_vector = (attention_weight @ V).transpose(1,2)
-        
+
         # Combine heads, where self.out_dim = self.num_head * self.head_dim
-        context_vec = context_vec.contiguous().view(b, token_num, self.out_dim)
+        context_vector = context_vector.contiguous().view(b, token_num, self.out_dim)
 
         context_vector = self.out_proj(context_vector)
 
