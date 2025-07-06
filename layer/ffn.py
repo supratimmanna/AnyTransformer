@@ -5,17 +5,15 @@ from layer.activation import *
 
 class Feed_Forwad(nn.Module):
 
-    def __init__(self, embed_dim, hidden_dim, out_dim, dropout=0.0):
+    def __init__(self, in_dim, hidden_dim, out_dim, dropout=0.0):
         super().__init__()
 
-        self.embed_dim = embed_dim
-        if dropout:
-            self.ff_layers = nn.Sequential([
-                nn.Linear(embed_dim, hidden_dim),
-                GELU(),
-                nn.Dropout(),
-                nn.Linear(hidden_dim, out_dim),
-            ])
+        self.ff_layers = nn.Sequential([
+            nn.Linear(in_dim, hidden_dim),
+            GELU(),
+            nn.Dropout(),
+            nn.Linear(hidden_dim, out_dim),
+        ])
 
     def forward(self, x):
         out = self.ff_layers(x)
