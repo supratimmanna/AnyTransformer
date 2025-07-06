@@ -78,6 +78,7 @@ class MultiHead_Attention(nn.Module):
             mask_bool = attention_mask[:token_num, :token_num]
 
         context_vector = Scaled_DotProduct_Attention()(Q, K, V, self.head_dim, mask_bool, self.dropout)
+        
         # Combine heads, where self.out_dim = self.num_head * self.head_dim
         context_vector = context_vector.contiguous().view(b, token_num, self.out_dim)
 
@@ -126,24 +127,16 @@ class MultiHead_Group_Query_Attention(nn.Module):
         K = self.w_k(x)
         V = self.w_v(x) 
 
-        # Unroll last dim: (b, num_tokens, d_out) -> (b, num_tokens, num_heads, head_dim)
-        Q = Q.view(b, token_num, self.num_q_head, self.head_dim)
-        K = K.view(b, token_num, self.num_kv_head, self.head_dim)
-        V = V.view(b, token_num, self.num_kv_head, self.head_dim)
+        # Unroll last dim: (b, token_num, d_out) -> (b, token_num, num_head, head_dim) -> (b, num_head, token_num, head_dim)
+        Q = Q.view(b, token_num, self.num_q_head, self.head_dim).transpose(1,2)
+        K = K.view(b, token_num, self.num_kv_head, self.head_dim).transpose(1,2)
+        V = V.view(b, token_num, self.num_kv_head, self.head_dim).transpose(1,2)
 
-        # Transpose: (b, num_tokens, num_head, head_dim) -> (b, num_head, token_num, head_dim)
-        Q = Q.transpose(1,2)
-        K = K.transpose(1,2)
-        V = V.transpose(1,2)
 
         # Expand k, v to match number of query heads
         # Repeat each k/v head for kv_group_size
         k = k.repeat_interleave(self.kv_group_size, dim=1)  # [B, num_q_heads, T, head_dim]
         v = v.repeat_interleave(self.kv_group_size, dim=1)
-
-
-        #  Dot product for each head
-        attention_score = (Q @ K.transpose(2,3)) / torch.sqrt(torch.tensor(self.head_dim))
 
         # Use the mask to fill attention scores
         if self.causal_attention:
@@ -152,13 +145,7 @@ class MultiHead_Group_Query_Attention(nn.Module):
         if attention_mask is not None:
             mask_bool = attention_mask[:token_num, :token_num]
 
-        attention_score.masked_fill_(mask_bool, -torch.inf)
-
-        attention_weight = torch.softmax(attention_score, dim=1)
-        attention_weight = self.dropout(attention_weight)
-
-        # Shape: (b, token_num, num_heads, head_dim)
-        context_vector = (attention_weight @ V).transpose(1,2)
+        context_vector = Scaled_DotProduct_Attention()(Q, K, V, self.head_dim, mask_bool, self.dropout)
 
         # Combine heads, where self.out_dim = self.num_head * self.head_dim
         context_vector = context_vector.contiguous().view(b, token_num, self.out_dim)
