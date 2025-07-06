@@ -5,7 +5,7 @@ from layer.attention import *
 from layer.ffn import *
 from layer.layer_norm import *
 
-class Transformer_Block(nn.Module):
+class GPT_Transformer_Block(nn.Module):
     def __init__(self, config):
         super().__init__()
 
