@@ -11,7 +11,7 @@ class Feed_Forwad(nn.Module):
         self.ff_layers = nn.Sequential([
             nn.Linear(in_dim, hidden_dim),
             GELU(),
-            nn.Dropout(),
+            nn.Dropout(dropout),
             nn.Linear(hidden_dim, out_dim),
         ])
 
