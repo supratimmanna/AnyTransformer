@@ -150,6 +150,12 @@ class MultiHead_Group_Query_Attention(nn.Module):
         if attention_mask is not None:
             mask_bool = attention_mask[:token_num, :token_num]
 
+            if len(mask_bool.shape)==2:
+                mask_bool = mask_bool.unsqueeze(1).unsqueeze(1)
+
+            if len(mask_bool.shape)==3:
+                mask_bool = mask_bool.unsqueeze(2)
+
         context_vector = Scaled_DotProduct_Attention()(Q, K, V, self.head_dim, mask_bool, self.dropout)
 
         # Combine heads, where self.out_dim = self.num_head * self.head_dim
