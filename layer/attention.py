@@ -27,8 +27,6 @@ class Scaled_DotProduct_Attention(nn.Module):
 
 
 
-
-
 class MultiHead_Attention(nn.Module):
     def __init__(self, in_dim, out_dim, context_length, num_head, dropout=0.0, qkv_bias = False, causal_attention=True):
         super().__init__()
@@ -55,7 +53,7 @@ class MultiHead_Attention(nn.Module):
 
     def forward(self, x, attention_mask=None):
 
-        if self.causal_attention and attention_mask is not None:
+        if not self.causal_attention and attention_mask is None:
             raise ValueError('Either maske causal_attention=True or provide a attention_mask but not both')
         
         b, token_num, in_dim = x.shape
@@ -75,7 +73,14 @@ class MultiHead_Attention(nn.Module):
             mask_bool = self.causal_attention_mask.bool()[:token_num, :token_num]
 
         if attention_mask is not None:
-            mask_bool = attention_mask[:token_num, :token_num]
+            mask_bool = attention_mask.bool()[:token_num, :token_num]
+
+            if len(mask_bool.shape)==2:
+                mask_bool = mask_bool.unsqueeze(1).unsqueeze(1)
+
+            if len(mask_bool.shape)==3:
+                mask_bool = mask_bool.unsqueeze(2)
+
 
         context_vector = Scaled_DotProduct_Attention()(Q, K, V, self.head_dim, mask_bool, self.dropout)
         
