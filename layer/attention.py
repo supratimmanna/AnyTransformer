@@ -10,6 +10,7 @@ class Scaled_DotProduct_Attention(nn.Module):
 
         #  Dot product for each head
         attention_score = (Q @ K.transpose(2,3)) / torch.sqrt(torch.tensor(head_dim))
+        print(attention_score.shape, 'attention score')
 
         # Use the mask to fill attention scores
         if mask_bool is not None:
@@ -190,7 +191,7 @@ class MultiHead_Group_Query_Attention(nn.Module):
 
 ### Multi-head Local Attention for both Causal and Non-Causal Attention ##################################
 
-class MultiHead_Local_Attention(nn.Module):
+class MultiHead_Local_Global_Attention(nn.Module):
     def __init__(self, in_dim, out_dim, num_head, window_size=64, dropout=0.0, qkv_bias = False, causal_attention=True):
         super().__init__()
 
@@ -213,10 +214,11 @@ class MultiHead_Local_Attention(nn.Module):
         self.dropout = nn.Dropout(dropout)
 
 
-    def forward(self, x, attention_mask=None):
+    def forward(self, x, attention_mask=None, global_attention = None):
 
-        # if not self.causal_attention and attention_mask is None:
-        #     raise ValueError('Either maske causal_attention=True or provide a attention_mask but not both')
+        ## if global_attention is None then it performs only local attention
+        ## if attention_mask is None then it performs only local attention without discarding the masked token
+        
         
         b, token_num, in_dim = x.shape
         device = x.device
@@ -234,37 +236,53 @@ class MultiHead_Local_Attention(nn.Module):
         # Use the mask to fill attention scores
         if self.causal_attention:
             causal_local_attention_mask = self.local_causal_mask(token_num, self.window_size, device=device)
-            mask_bool = causal_local_attention_mask.bool()[:token_num, :token_num]
+            mask_bool = causal_local_attention_mask.bool()[:token_num, :token_num].unsqueeze(0)
+
+            ## if global attention token mask (0:attend the token for attention score 1: do not attend) is provided
+            ## then bring those golbal token into consideration for attention score calculation.
+            ## For causal the gobal atention tokens must be from the previous time stamp
+            if global_attention is not None:
+                global_attention = global_attention[:token_num, :token_num].unsqueeze(1)#.expand(-1, token_num, -1) 
+                mask_bool = torch.logical_and(mask_bool, global_attention).unsqueeze(1)
+
 
         else:
             # create local symmetric mask
             mask_bool_local_symmetry = self.symmetric_local_mask(token_num, self.window_size, device=device)
+            mask_bool_local_symmetry = mask_bool_local_symmetry.unsqueeze(0)
 
             if attention_mask is not None:
                 ## if already an attention mask provided for masked token that take that also into consideration 
                 ## along with local attention mask by perfroming AND logic between two amsks.
 
-                mask_bool_provided = attention_mask[:token_num, :token_num]
-                mask_bool = torch.logical_and(mask_bool_local_symmetry, mask_bool_provided)
+                mask_bool_provided = attention_mask[:token_num, :token_num].unsqueeze(1)
+                mask_bool = torch.logical_or(mask_bool_local_symmetry, mask_bool_provided)
+
+                ## if global attention token mask (0:attend the token for attention score 1: do not attend) is provided
+                ## then bring those golbal token into consideration for attention score calculation.
+                if global_attention is not None:
+                    global_attention = global_attention[:token_num, :token_num].unsqueeze(1)
+                    mask_bool = torch.logical_and(mask_bool, global_attention)
 
                 if len(mask_bool.shape)==2:
                     mask_bool = mask_bool.unsqueeze(1).unsqueeze(1)
 
                 if len(mask_bool.shape)==3:
-                    mask_bool = mask_bool.unsqueeze(2)
+                    mask_bool = mask_bool.unsqueeze(1)
                     
             else:
                 mask_bool = mask_bool_local_symmetry.bool()
 
+     
         dotproduct_attention = Scaled_DotProduct_Attention()
         context_vector = dotproduct_attention(Q, K, V, self.head_dim, self.dropout, mask_bool)
         
-        # Combine heads, where self.out_dim = self.num_head * self.head_dim
-        context_vector = context_vector.contiguous().view(b, token_num, self.out_dim)
+        # # Combine heads, where self.out_dim = self.num_head * self.head_dim
+        # context_vector = context_vector.contiguous().view(b, token_num, self.out_dim)
 
-        context_vector = self.out_proj(context_vector)
+        # context_vector = self.out_proj(context_vector)
 
-        return context_vector
+        # return context_vector
     
 
     def local_causal_mask(self, seq_len, window_size, device=None):
