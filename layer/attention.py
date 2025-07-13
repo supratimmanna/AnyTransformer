@@ -235,43 +235,28 @@ class MultiHead_Local_Global_Attention(nn.Module):
 
         # Use the mask to fill attention scores
         if self.causal_attention:
-            causal_local_attention_mask = self.local_causal_mask(token_num, self.window_size, device=device)
-            mask_bool = causal_local_attention_mask.bool()[:token_num, :token_num].unsqueeze(0)
-
-            ## if global attention token mask (0:attend the token for attention score 1: do not attend) is provided
-            ## then bring those golbal token into consideration for attention score calculation.
-            ## For causal the gobal atention tokens must be from the previous time stamp
-            if global_attention is not None:
-                global_attention = global_attention[:token_num, :token_num].unsqueeze(1)#.expand(-1, token_num, -1) 
-                mask_bool = torch.logical_and(mask_bool, global_attention).unsqueeze(1)
-
+            causal_local_global_attention_mask = self.local_global_causal_mask(b, token_num, self.window_size, 
+                                                                        global_attention = global_attention, device = device)
+            
+            mask_bool = causal_local_global_attention_mask.bool()[:token_num, :token_num].unsqueeze(1)
 
         else:
             # create local symmetric mask
-            mask_bool_local_symmetry = self.symmetric_local_mask(token_num, self.window_size, device=device)
-            mask_bool_local_symmetry = mask_bool_local_symmetry.unsqueeze(0)
+            mask_bool_local_global_symmetry = self.symmetric_local_global_mask(b, token_num, self.window_size, 
+                                                                        global_attention=global_attention,device=device)
+            
+            mask_bool_local_global_symmetry = mask_bool_local_global_symmetry.unsqueeze(1)
 
             if attention_mask is not None:
                 ## if already an attention mask provided for masked token that take that also into consideration 
                 ## along with local attention mask by perfroming AND logic between two amsks.
 
-                mask_bool_provided = attention_mask[:token_num, :token_num].unsqueeze(1)
-                mask_bool = torch.logical_or(mask_bool_local_symmetry, mask_bool_provided)
+                mask_bool_provided = attention_mask[:token_num, :token_num].unsqueeze(1).unsqueeze(1)
+                mask_bool = torch.logical_or(mask_bool_local_global_symmetry, mask_bool_provided)
 
-                ## if global attention token mask (0:attend the token for attention score 1: do not attend) is provided
-                ## then bring those golbal token into consideration for attention score calculation.
-                if global_attention is not None:
-                    global_attention = global_attention[:token_num, :token_num].unsqueeze(1)
-                    mask_bool = torch.logical_and(mask_bool, global_attention)
-
-                if len(mask_bool.shape)==2:
-                    mask_bool = mask_bool.unsqueeze(1).unsqueeze(1)
-
-                if len(mask_bool.shape)==3:
-                    mask_bool = mask_bool.unsqueeze(1)
-                    
+                
             else:
-                mask_bool = mask_bool_local_symmetry.bool()
+                mask_bool = mask_bool_local_global_symmetry.bool()
 
         dotproduct_attention = Scaled_DotProduct_Attention()
         context_vector = dotproduct_attention(Q, K, V, self.head_dim, self.dropout, mask_bool)
@@ -284,31 +269,78 @@ class MultiHead_Local_Global_Attention(nn.Module):
         return context_vector
     
 
-    def local_causal_mask(self, seq_len, window_size, device=None):
-        idx = torch.arange(seq_len, device=device).unsqueeze(1)  # shape [T, 1]
-        jdx = torch.arange(seq_len, device=device).unsqueeze(0)  # shape [1, T]
+    def local_global_causal_mask(self, batch_size, seq_len, window_size, global_attention=None, device=None):
 
-        # Original condition — positions allowed
-        allowed = (idx - jdx < window_size) & (idx >= jdx)
+        all_masks = []
+        for i in range(batch_size):
+            idx = torch.arange(seq_len, device=device).unsqueeze(1)  # shape [T, 1]
+            jdx = torch.arange(seq_len, device=device).unsqueeze(0)  # shape [1, T]
 
-        # Invert it: 0 for allowed positions, 1 for masked positions
-        mask = ~allowed  # or: mask = torch.logical_not(allowed)
+            # Original condition — positions allowed
+            allowed = (idx - jdx < window_size) & (idx >= jdx)
+
+            # Invert it: 0 for allowed positions, 1 for masked positions
+            local_mask = torch.logical_not(allowed).float()  
+
+            ## if global attention token mask (0:attend the token for attention score 1: do not attend) is provided
+            ## then bring those golbal token into consideration for attention score calculation.
+            ## For causal the gobal atention tokens must be from the previous time stamp
+
+            if global_attention is not None:
+                # Global mask: 0s for global rows/cols
+                global_mask = torch.ones_like(local_mask)
+
+                for j,g in enumerate(global_attention[i]):
+                    # print(j,g)
+                    
+                    if g.item()==True:
+                        global_mask[j, :] = 0
+                        global_mask[:, j] = 0
+
+                final_mask = torch.logical_and(local_mask, global_mask)  # [T, T]
+
+            else:
+                final_mask = local_mask
+
+            all_masks.append(final_mask)
         
-        return mask.float()
+        return torch.stack(all_masks, dim=0).float()
 
+    
 
-
-    def symmetric_local_mask(self, seq_len, window_size, device=None):
+    def symmetric_local_global_mask(self, batch_size, seq_len, window_size, global_attention=None, device=None):
         assert window_size % 2 == 1, "window_size must be odd for symmetric mask"
         half_window = window_size // 2
 
-        idx = torch.arange(seq_len, device=device).unsqueeze(1)  # [T, 1]
-        jdx = torch.arange(seq_len, device=device).unsqueeze(0)  # [1, T]
+        all_masks = []
 
-        # Mask 0 where |i - j| <= half_window, else 1
-        mask = (torch.abs(idx - jdx) > half_window)
+        for i in range(batch_size):
 
-        return mask.float()
+                idx = torch.arange(seq_len, device=device).unsqueeze(1)  # [T, 1]
+                jdx = torch.arange(seq_len, device=device).unsqueeze(0)  # [1, T]
+
+                # Mask 0 where |i - j| <= half_window, else 1
+                local_mask = (torch.abs(idx - jdx) > half_window).float()
+
+                ## if global attention token mask (0:attend the token for attention score 1: do not attend) is provided
+                ## then bring those golbal token into consideration for attention score calculation.
+                if global_attention is not None:
+                        # Global mask: 0s for global rows/cols
+                        global_mask = torch.ones_like(local_mask)
+
+                        for j,g in enumerate(global_attention[i]):
+                                if g.item()==True:
+                                        global_mask[j, :] = 0
+                                        global_mask[:, j] = 0
+
+                        final_mask = torch.logical_and(local_mask, global_mask)  # [T, T]
+
+                else:
+                        final_mask = local_mask
+
+                all_masks.append(final_mask)
+
+        return torch.stack(all_masks, dim=0).float()
 
 
 
