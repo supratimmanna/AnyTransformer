@@ -10,7 +10,7 @@ class Scaled_DotProduct_Attention(nn.Module):
 
         #  Dot product for each head
         attention_score = (Q @ K.transpose(2,3)) / torch.sqrt(torch.tensor(head_dim))
-        print(attention_score.shape, 'attention score')
+
 
         # Use the mask to fill attention scores
         if mask_bool is not None:
@@ -273,16 +273,15 @@ class MultiHead_Local_Global_Attention(nn.Module):
             else:
                 mask_bool = mask_bool_local_symmetry.bool()
 
-     
         dotproduct_attention = Scaled_DotProduct_Attention()
         context_vector = dotproduct_attention(Q, K, V, self.head_dim, self.dropout, mask_bool)
         
-        # # Combine heads, where self.out_dim = self.num_head * self.head_dim
-        # context_vector = context_vector.contiguous().view(b, token_num, self.out_dim)
+        # Combine heads, where self.out_dim = self.num_head * self.head_dim
+        context_vector = context_vector.contiguous().view(b, token_num, self.out_dim)
 
-        # context_vector = self.out_proj(context_vector)
+        context_vector = self.out_proj(context_vector)
 
-        # return context_vector
+        return context_vector
     
 
     def local_causal_mask(self, seq_len, window_size, device=None):
