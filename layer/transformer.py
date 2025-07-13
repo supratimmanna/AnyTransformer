@@ -10,7 +10,7 @@ class GPT_Transformer_Block(nn.Module):
         super().__init__()
 
         self.attention_block = MultiHead_Attention(in_dim=config['embed_dim'], out_dim=config['embed_dim'],
-                                                   context_length=config['context_length'], num_head=config['num_head'],
+                                                   num_head=config['num_head'], context_length=config['context_length'],
                                                    dropout=config['dropout'], qkv_bias=config['qkv_bias'],
                                                    causal_attention=config['causal_attention'])
         
@@ -47,12 +47,14 @@ class GPT_Transformer_Block(nn.Module):
     
 
 
+
+
 class BERT_Transformer_Block(nn.Module):
     def __init__(self, config):
         super().__init__()
 
         self.attention_block = MultiHead_Attention(in_dim=config['embed_dim'], out_dim=config['embed_dim'],
-                                                   context_length=config['context_length'], num_head=config['num_head'],
+                                                   num_head=config['num_head'], context_length=config['context_length'],
                                                    dropout=config['dropout'], qkv_bias=config['qkv_bias'],
                                                    causal_attention=False)
         
