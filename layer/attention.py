@@ -6,13 +6,14 @@ class Scaled_DotProduct_Attention(nn.Module):
     def __init__(self):
         super().__init__()
 
-    def forward(self, Q, K, V, head_dim, mask_bool, dropout):    
+    def forward(self, Q, K, V, head_dim, dropout, mask_bool=None):    
 
         #  Dot product for each head
         attention_score = (Q @ K.transpose(2,3)) / torch.sqrt(torch.tensor(head_dim))
 
         # Use the mask to fill attention scores
-        attention_score.masked_fill_(mask_bool, -torch.inf)
+        if mask_bool is not None:
+            attention_score.masked_fill_(mask_bool, -torch.inf)
 
         attention_weight = torch.softmax(attention_score, dim=1)
         attention_weight = dropout(attention_weight)
@@ -28,7 +29,7 @@ class Scaled_DotProduct_Attention(nn.Module):
 
 
 class MultiHead_Attention(nn.Module):
-    def __init__(self, in_dim, out_dim, context_length, num_head, dropout=0.0, qkv_bias = False, causal_attention=True):
+    def __init__(self, in_dim, out_dim, num_head, context_length=1024, dropout=0.0, qkv_bias = False, causal_attention=True):
         super().__init__()
 
         assert out_dim % num_head ==0, "out_dim must be visible by num_head"
@@ -53,8 +54,8 @@ class MultiHead_Attention(nn.Module):
 
     def forward(self, x, attention_mask=None):
 
-        if not self.causal_attention and attention_mask is None:
-            raise ValueError('Either maske causal_attention=True or provide a attention_mask but not both')
+        # if not self.causal_attention and attention_mask is None:
+        #     raise ValueError('Either maske causal_attention=True or provide a attention_mask but not both')
         
         b, token_num, in_dim = x.shape
 
@@ -72,17 +73,21 @@ class MultiHead_Attention(nn.Module):
         if self.causal_attention:
             mask_bool = self.causal_attention_mask.bool()[:token_num, :token_num]
 
-        if attention_mask is not None:
-            mask_bool = attention_mask.bool()[:token_num, :token_num]
+        else:
+            if attention_mask is not None:
+                mask_bool = attention_mask.bool()[:token_num, :token_num]
 
-            if len(mask_bool.shape)==2:
-                mask_bool = mask_bool.unsqueeze(1).unsqueeze(1)
+                if len(mask_bool.shape)==2:
+                    mask_bool = mask_bool.unsqueeze(1).unsqueeze(1)
 
-            if len(mask_bool.shape)==3:
-                mask_bool = mask_bool.unsqueeze(2)
+                if len(mask_bool.shape)==3:
+                    mask_bool = mask_bool.unsqueeze(2)
+                    
+            else:
+                mask_bool = attention_mask
 
 
-        context_vector = Scaled_DotProduct_Attention()(Q, K, V, self.head_dim, mask_bool, self.dropout)
+        context_vector = Scaled_DotProduct_Attention()(Q, K, V, self.head_dim, self.dropout, mask_bool)
         
         # Combine heads, where self.out_dim = self.num_head * self.head_dim
         context_vector = context_vector.contiguous().view(b, token_num, self.out_dim)
@@ -94,9 +99,11 @@ class MultiHead_Attention(nn.Module):
 
 
 class MultiHead_Group_Query_Attention(nn.Module):
-    def __init__(self, in_dim, out_dim, context_length, num_q_head, num_kv_head, dropout=0.0, qkv_bias = False, causal_attention=True):
+    def __init__(self, in_dim, out_dim, num_q_head, num_kv_head, context_length=1024, dropout=0.0, qkv_bias = False, causal_attention=True):
         super().__init__()
 
+        ## if num_kv_head =1 then it is a Multi-query attention
+        
         assert out_dim % num_q_head ==0, "out_dim must be visible by num_q_head"
         assert num_q_head % num_kv_head ==0, "num_q_head must be visible by num_kv_head"
 
@@ -140,23 +147,28 @@ class MultiHead_Group_Query_Attention(nn.Module):
 
         # Expand k, v to match number of query heads
         # Repeat each k/v head for kv_group_size
-        k = k.repeat_interleave(self.kv_group_size, dim=1)  # [B, num_q_heads, T, head_dim]
-        v = v.repeat_interleave(self.kv_group_size, dim=1)
+        K = K.repeat_interleave(self.kv_group_size, dim=1)  # [B, num_q_heads, T, head_dim]
+        V = V.repeat_interleave(self.kv_group_size, dim=1)
 
         # Use the mask to fill attention scores
         if self.causal_attention:
             mask_bool = self.causal_attention_mask.bool()[:token_num, :token_num]
 
-        if attention_mask is not None:
-            mask_bool = attention_mask[:token_num, :token_num]
+        else:
 
-            if len(mask_bool.shape)==2:
-                mask_bool = mask_bool.unsqueeze(1).unsqueeze(1)
+            if attention_mask is not None:
+                mask_bool = attention_mask[:token_num, :token_num]
 
-            if len(mask_bool.shape)==3:
-                mask_bool = mask_bool.unsqueeze(2)
+                if len(mask_bool.shape)==2:
+                    mask_bool = mask_bool.unsqueeze(1).unsqueeze(1)
 
-        context_vector = Scaled_DotProduct_Attention()(Q, K, V, self.head_dim, mask_bool, self.dropout)
+                if len(mask_bool.shape)==3:
+                    mask_bool = mask_bool.unsqueeze(2)
+
+            else:
+                mask_bool = attention_mask
+
+        context_vector = Scaled_DotProduct_Attention()(Q, K, V, self.head_dim, self.dropout, mask_bool)
 
         # Combine heads, where self.out_dim = self.num_head * self.head_dim
         context_vector = context_vector.contiguous().view(b, token_num, self.out_dim)
