@@ -26,7 +26,9 @@ class Scaled_DotProduct_Attention(nn.Module):
 
 
 
+########################################################################################################################
 
+### Multi-head Self-Attention for both Causal and Non-Causal Attention ################
 
 class MultiHead_Attention(nn.Module):
     def __init__(self, in_dim, out_dim, num_head, context_length=1024, dropout=0.0, qkv_bias = False, causal_attention=True):
@@ -98,12 +100,16 @@ class MultiHead_Attention(nn.Module):
         
 
 
+########################################################################################################################
+
+### Multi-head Group Query Attention and Multi-Head Multi Query Attention for both Causal and Non-Causal Attention ################
+
 class MultiHead_Group_Query_Attention(nn.Module):
     def __init__(self, in_dim, out_dim, num_q_head, num_kv_head, context_length=1024, dropout=0.0, qkv_bias = False, causal_attention=True):
         super().__init__()
 
         ## if num_kv_head =1 then it is a Multi-query attention
-        
+
         assert out_dim % num_q_head ==0, "out_dim must be visible by num_q_head"
         assert num_q_head % num_kv_head ==0, "num_q_head must be visible by num_kv_head"
 
@@ -178,7 +184,114 @@ class MultiHead_Group_Query_Attention(nn.Module):
         return context_vector
         
 
+
+
+### ##########################################################################################
+
+### Multi-head Local Attention for both Causal and Non-Causal Attention ##################################
+
+class MultiHead_Local_Attention(nn.Module):
+    def __init__(self, in_dim, out_dim, num_head, window_size=64, dropout=0.0, qkv_bias = False, causal_attention=True):
+        super().__init__()
+
+        assert out_dim % num_head ==0, "out_dim must be visible by num_head"
+
+        self.out_dim = out_dim
+        self.num_head = num_head
+        self.head_dim = out_dim//num_head
+        self.causal_attention = causal_attention
+        self.window_size = window_size
+
+        ## query, key and value projection
+        self.w_q = nn.Linear(in_dim, out_dim, bias = qkv_bias)
+        self.w_k = nn.Linear(in_dim, out_dim, bias = qkv_bias)
+        self.w_v = nn.Linear(in_dim, out_dim, bias = qkv_bias)
+
+        ## project of the head outputs to the final output
+        self.out_proj = nn.Linear(out_dim, out_dim, bias = qkv_bias)
         
+        self.dropout = nn.Dropout(dropout)
+
+
+    def forward(self, x, attention_mask=None):
+
+        # if not self.causal_attention and attention_mask is None:
+        #     raise ValueError('Either maske causal_attention=True or provide a attention_mask but not both')
+        
+        b, token_num, in_dim = x.shape
+        device = x.device
+
+        ## shape of Q,K,V: (b, token_num, out_dim)
+        Q = self.w_q(x)
+        K = self.w_k(x)
+        V = self.w_v(x) 
+
+        # Unroll last dim: (b, token_num, d_out) -> (b, token_num, num_head, head_dim) -> (b, num_head, token_num, head_dim)
+        Q = Q.view(b, token_num, self.num_head, self.head_dim).transpose(1,2)
+        K = K.view(b, token_num, self.num_head, self.head_dim).transpose(1,2)
+        V = V.view(b, token_num, self.num_head, self.head_dim).transpose(1,2)
+
+        # Use the mask to fill attention scores
+        if self.causal_attention:
+            causal_local_attention_mask = self.local_causal_mask(token_num, self.window_size, device=device)
+            mask_bool = causal_local_attention_mask.bool()[:token_num, :token_num]
+
+        else:
+            # create local symmetric mask
+            mask_bool_local_symmetry = self.symmetric_local_mask(token_num, self.window_size, device=device)
+
+            if attention_mask is not None:
+                ## if already an attention mask provided for masked token that take that also into consideration 
+                ## along with local attention mask by perfroming AND logic between two amsks.
+
+                mask_bool_provided = attention_mask[:token_num, :token_num]
+                mask_bool = torch.logical_and(mask_bool_local_symmetry, mask_bool_provided)
+
+                if len(mask_bool.shape)==2:
+                    mask_bool = mask_bool.unsqueeze(1).unsqueeze(1)
+
+                if len(mask_bool.shape)==3:
+                    mask_bool = mask_bool.unsqueeze(2)
+                    
+            else:
+                mask_bool = mask_bool_local_symmetry.bool()
+
+        dotproduct_attention = Scaled_DotProduct_Attention()
+        context_vector = dotproduct_attention(Q, K, V, self.head_dim, self.dropout, mask_bool)
+        
+        # Combine heads, where self.out_dim = self.num_head * self.head_dim
+        context_vector = context_vector.contiguous().view(b, token_num, self.out_dim)
+
+        context_vector = self.out_proj(context_vector)
+
+        return context_vector
+    
+
+    def local_causal_mask(self, seq_len, window_size, device=None):
+        idx = torch.arange(seq_len, device=device).unsqueeze(1)  # shape [T, 1]
+        jdx = torch.arange(seq_len, device=device).unsqueeze(0)  # shape [1, T]
+
+        # Original condition — positions allowed
+        allowed = (idx - jdx < window_size) & (idx >= jdx)
+
+        # Invert it: 0 for allowed positions, 1 for masked positions
+        mask = ~allowed  # or: mask = torch.logical_not(allowed)
+        
+        return mask.float()
+
+
+
+    def symmetric_local_mask(self, seq_len, window_size, device=None):
+        assert window_size % 2 == 1, "window_size must be odd for symmetric mask"
+        half_window = window_size // 2
+
+        idx = torch.arange(seq_len, device=device).unsqueeze(1)  # [T, 1]
+        jdx = torch.arange(seq_len, device=device).unsqueeze(0)  # [1, T]
+
+        # Mask 0 where |i - j| <= half_window, else 1
+        mask = (torch.abs(idx - jdx) > half_window)
+
+        return mask.float()
 
 
 
